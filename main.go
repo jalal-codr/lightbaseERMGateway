@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
@@ -17,29 +16,19 @@ import (
 CONTROL CHARACTERS
 */
 const (
-	// HL7 MLLP
-	VT = 0x0B // Vertical Tab (Start Block)
-	FS = 0x1C // File Separator (End Block)
+	VT = 0x0B // Start Block
+	FS = 0x1C // End Block
 	CR = 0x0D // Carriage Return
 	LF = 0x0A // Line Feed
 )
 
 /*
-CONFIGURATION - EXTRACTED FROM YOUR DEVICE
+CONFIGURATION
 */
 const (
-	// LIS DEVICE IP AND PORT - From your device configuration screen
-	LIS_DEVICE_IP      = "192.168.1.10"
-	LIS_DEVICE_PORT    = "7007"
-	LIS_DEVICE_ADDRESS = LIS_DEVICE_IP + ":" + LIS_DEVICE_PORT
-
-	// Debug mode
-	DEBUG_MODE = true
-
-	// Client mode: Connect TO the LIS device
-	SERVER_MODE = false
-
-	// Log results to terminal
+	PC_IP           = "192.168.110.193"
+	LISTEN_PORT     = "7007"
+	DEBUG_MODE      = true
 	LOG_TO_TERMINAL = true
 )
 
@@ -47,23 +36,16 @@ const (
 ENTRY POINT
 */
 func main() {
-	log.Println("🚀 Starting HL7 TCP/IP Client")
+	log.Println("🚀 Starting HL7 TCP/IP Server (Listening for LIS connections)")
 	log.Println(strings.Repeat("=", 60))
-	log.Printf("Mode: CLIENT (connecting TO LIS device)\n")
-	log.Printf("LIS Device IP: %s\n", LIS_DEVICE_IP)
-	log.Printf("LIS Device Port: %s\n", LIS_DEVICE_PORT)
-	log.Printf("Full Address: %s\n", LIS_DEVICE_ADDRESS)
-	log.Printf("Protocol: HL7 MLLP\n")
-	log.Printf("Results will be: LOGGED TO TERMINAL\n")
+	fullAddress := PC_IP + ":" + LISTEN_PORT
+	log.Printf("Listening on %s for incoming LIS connections...\n", fullAddress)
 
-	// Print local IP addresses for reference
+	// Print local IP addresses
 	printLocalIPs()
 
-	log.Println(strings.Repeat("=", 60))
-	log.Println("⏳ Starting connection attempts...")
-
-	// Connect to LIS device
-	startClient()
+	// Start server
+	startServer(fullAddress)
 }
 
 func printLocalIPs() {
@@ -85,45 +67,26 @@ func printLocalIPs() {
 }
 
 // ============================================================================
-// CLIENT MODE - Connect to LIS Device at 192.168.1.10:7007
+// TCP SERVER - LISTEN FOR LIS
 // ============================================================================
 
-func startClient() {
-	retryCount := 0
+func startServer(address string) {
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatal("❌ Failed to start server:", err)
+	}
+	defer ln.Close()
+
+	log.Println("✅ HL7 Server is listening... Waiting for LIS to connect.")
 
 	for {
-		retryCount++
-		log.Printf("\n🔌 Attempt #%d: Connecting to LIS device at %s...\n", retryCount, LIS_DEVICE_ADDRESS)
-
-		conn, err := net.DialTimeout("tcp", LIS_DEVICE_ADDRESS, 10*time.Second)
+		conn, err := ln.Accept()
 		if err != nil {
-			log.Println("❌ Connection failed:", err)
-
-			if retryCount == 1 {
-				log.Println("\n⚠️  TROUBLESHOOTING TIPS:")
-				log.Println("   1. Make sure the LIS device is powered on")
-				log.Println("   2. Verify both devices are on the same network (192.168.1.x)")
-				log.Println("   3. Check that HL7 communication is enabled on the device")
-				log.Printf("   4. Try pinging the device first: ping %s\n", LIS_DEVICE_IP)
-				log.Println("   5. Check if Windows Firewall is blocking the connection")
-				log.Println("   6. Verify the device is set to 'Auto Comm' mode (if applicable)")
-				log.Println()
-			}
-
-			log.Println("⏳ Retrying in 5 seconds...")
-			time.Sleep(5 * time.Second)
+			log.Println("❌ Accept error:", err)
 			continue
 		}
-
-		retryCount = 0 // Reset on successful connection
-		log.Printf("✅ Connected to LIS device at %s\n", conn.RemoteAddr())
-		log.Printf("   Local connection from: %s\n", conn.LocalAddr())
-		log.Println(strings.Repeat("=", 60))
-
-		handleConnection(conn)
-
-		log.Println("\n⚠️ Connection closed by device, reconnecting in 2 seconds...")
-		time.Sleep(2 * time.Second)
+		log.Printf("🔌 LIS Connected: %s -> %s\n", conn.RemoteAddr(), conn.LocalAddr())
+		go handleConnection(conn)
 	}
 }
 
@@ -133,72 +96,52 @@ func startClient() {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-
 	reader := bufio.NewReader(conn)
 	var messageBuffer bytes.Buffer
 	inMessage := false
 	byteCount := 0
-
-	log.Println("\n📊 Connection established, listening for HL7 data from device...")
-	log.Println("💡 TIP: Run a test on the device to trigger result transmission")
-	log.Println(strings.Repeat("-", 60))
-
-	// Set read timeout to detect if connection is idle
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	lastActivity := time.Now()
+
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	log.Println("\n📊 Connection established, listening for HL7 data...")
 
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Check if we've had recent activity
 				if time.Since(lastActivity) > 30*time.Second {
 					log.Println("\n⏰ No data received for 30 seconds")
-					log.Println("💡 The device is connected but not sending data")
-					log.Println("   Try running a test or checking the 'Auto Comm' setting")
 				}
-				// Reset timeout and continue
 				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 				continue
 			}
-
-			if err != io.EOF {
+			if err != nil {
 				log.Println("❌ Read error:", err)
-			} else {
-				log.Println("📡 Connection closed by LIS device")
 			}
 			return
 		}
 
 		lastActivity = time.Now()
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		byteCount++
 
-		// Log first few bytes to confirm data reception
-		if byteCount == 1 {
-			log.Println("\n✅ Data received from device!")
-		}
-
-		if DEBUG_MODE && byteCount <= 100 { // Limit debug output for first 100 bytes
+		if DEBUG_MODE && byteCount <= 100 {
 			log.Printf("Byte %d: 0x%02X (%s)\n", byteCount, b, byteDescription(b))
 		}
 
 		switch b {
 		case VT:
-			// Start of HL7 message
 			inMessage = true
 			messageBuffer.Reset()
 			log.Println("\n➡️ [HL7] Message Start (VT received)")
-			log.Println(strings.Repeat("-", 60))
 
 		case FS:
-			// End of HL7 message
 			if inMessage {
 				inMessage = false
 				log.Println("⬅️ [HL7] Message End (FS received)")
 				processHL7Message(messageBuffer.String(), conn)
 				messageBuffer.Reset()
-				byteCount = 0 // Reset for next message
+				byteCount = 0
 			}
 
 		case CR:
@@ -207,7 +150,6 @@ func handleConnection(conn net.Conn) {
 			}
 
 		case LF:
-			// Some systems send CRLF, usually ignore LF
 			if inMessage && DEBUG_MODE && byteCount <= 100 {
 				log.Println("   [LF received, ignoring]")
 			}
@@ -215,9 +157,6 @@ func handleConnection(conn net.Conn) {
 		default:
 			if inMessage {
 				messageBuffer.WriteByte(b)
-			} else if DEBUG_MODE && byteCount <= 20 {
-				// Data received outside of message boundaries
-				log.Printf("⚠️  Unexpected byte outside message: 0x%02X (%s)\n", b, byteDescription(b))
 			}
 		}
 	}
@@ -246,24 +185,16 @@ func byteDescription(b byte) string {
 // ============================================================================
 
 func processHL7Message(message string, conn net.Conn) {
-	log.Println("\n📦 [HL7] MESSAGE RECEIVED FROM DEVICE")
-	log.Println(strings.Repeat("=", 60))
-
+	log.Println("\n📦 [HL7] MESSAGE RECEIVED")
 	if DEBUG_MODE {
-		log.Println("Raw Message:")
-		log.Println(message)
+		log.Println("Raw Message:\n", message)
 		log.Println(strings.Repeat("-", 60))
-
-		// Show hex dump
-		log.Println("Hex Dump:")
-		log.Println(hex.Dump([]byte(message)))
-		log.Println(strings.Repeat("-", 60))
+		log.Println("Hex Dump:\n", hex.Dump([]byte(message)))
 	}
 
-	// Parse HL7 message
 	results := parseHL7(message)
 
-	// Send ACK back to device
+	// Send ACK back to LIS
 	ack := generateHL7ACK(message)
 	if ack != "" {
 		ackBytes := []byte{VT}
@@ -274,80 +205,48 @@ func processHL7Message(message string, conn net.Conn) {
 		if err != nil {
 			log.Println("❌ Error sending ACK:", err)
 		} else {
-			log.Println("✅ [HL7] ACK sent back to device")
-			if DEBUG_MODE {
-				log.Printf("ACK Content:\n%s\n", ack)
-			}
+			log.Println("✅ [HL7] ACK sent to LIS")
 		}
 	} else {
-		log.Println("⚠️ Could not generate ACK - invalid message format")
+		log.Println("⚠️ Could not generate ACK - invalid message")
 	}
 
-	// Log results to terminal
-	if len(results) > 0 {
-		log.Printf("\n✅ Parsed %d result(s) from message\n", len(results))
+	if LOG_TO_TERMINAL && len(results) > 0 {
 		logResultsToTerminal(results)
-	} else {
-		log.Println("⚠️ No OBX results found in message")
 	}
-
-	log.Println(strings.Repeat("=", 60) + "\n")
 }
 
+// ============================================================================
+// HL7 PARSING & ACK GENERATION (same as your previous logic)
+// ============================================================================
+
 func parseHL7(message string) []map[string]interface{} {
-	// Handle both CR and CRLF line endings
 	message = strings.ReplaceAll(message, "\r\n", "\r")
 	segments := strings.Split(message, string(CR))
 
 	results := []map[string]interface{}{}
 	var patientID, patientName, accessionNumber, messageControlID string
 
-	log.Printf("Found %d segments:\n", len(segments))
-
-	for i, segment := range segments {
+	for _, segment := range segments {
 		segment = strings.TrimSpace(segment)
-		if len(segment) == 0 {
+		if segment == "" {
 			continue
 		}
-
 		fields := strings.Split(segment, "|")
 		if len(fields) == 0 {
 			continue
 		}
-
 		segmentType := fields[0]
-		log.Printf("  %d. %s (%d fields)\n", i+1, segmentType, len(fields))
 
 		switch segmentType {
 		case "MSH":
 			messageControlID = getHL7Field(fields, 9)
-			if DEBUG_MODE {
-				log.Printf("     Message ID: %s\n", messageControlID)
-			}
-
 		case "PID":
 			patientID = getHL7Field(fields, 3)
 			patientName = getHL7Field(fields, 5)
-			if DEBUG_MODE {
-				log.Printf("     Patient: %s (ID: %s)\n", patientName, patientID)
-			}
-
 		case "OBR":
 			accessionNumber = getHL7Field(fields, 2)
-			if DEBUG_MODE {
-				log.Printf("     Accession: %s\n", accessionNumber)
-			}
-
 		case "OBX":
-			testCode := parseHL7Component(getHL7Field(fields, 3), 0)
-			testName := parseHL7Component(getHL7Field(fields, 3), 1)
-			value := getHL7Field(fields, 5)
-			units := getHL7Field(fields, 6)
-
-			if DEBUG_MODE {
-				log.Printf("     Test: %s (%s) = %s %s\n", testName, testCode, value, units)
-			}
-
 			result := map[string]interface{}{
 				"patient_id":       patientID,
 				"patient_name":     patientName,
@@ -355,10 +254,10 @@ func parseHL7(message string) []map[string]interface{} {
 				"message_id":       messageControlID,
 				"observation_id":   getHL7Field(fields, 1),
 				"value_type":       getHL7Field(fields, 2),
-				"test_code":        testCode,
-				"test_name":        testName,
-				"value":            value,
-				"units":            units,
+				"test_code":        parseHL7Component(getHL7Field(fields, 3), 0),
+				"test_name":        parseHL7Component(getHL7Field(fields, 3), 1),
+				"value":            getHL7Field(fields, 5),
+				"units":            getHL7Field(fields, 6),
 				"reference_range":  getHL7Field(fields, 7),
 				"abnormal_flags":   getHL7Field(fields, 8),
 				"result_status":    getHL7Field(fields, 11),
@@ -414,7 +313,6 @@ func generateHL7ACK(originalMessage string) string {
 	segments := strings.Split(originalMessage, string(CR))
 
 	var mshFields []string
-
 	for _, segment := range segments {
 		segment = strings.TrimSpace(segment)
 		if strings.HasPrefix(segment, "MSH") {
@@ -424,9 +322,6 @@ func generateHL7ACK(originalMessage string) string {
 	}
 
 	if len(mshFields) < 10 {
-		if DEBUG_MODE {
-			log.Printf("Invalid MSH - only %d fields\n", len(mshFields))
-		}
 		return ""
 	}
 
@@ -440,12 +335,11 @@ func generateHL7ACK(originalMessage string) string {
 
 	timestamp := time.Now().Format("20060102150405")
 
-	// Build ACK
 	ack := fmt.Sprintf("MSH%s%s%s%s%s%s%s%s%s%sACK%s%s%sAL%s",
 		fieldSeparator,
 		encodingChars,
 		fieldSeparator,
-		receivingApp, // Swap sender/receiver
+		receivingApp,
 		fieldSeparator,
 		receivingFacility,
 		fieldSeparator,
@@ -470,7 +364,7 @@ func generateHL7ACK(originalMessage string) string {
 }
 
 // ============================================================================
-// TERMINAL LOGGING - Log results in a nice formatted way
+// LOGGING RESULTS
 // ============================================================================
 
 func logResultsToTerminal(results []map[string]interface{}) {
@@ -481,14 +375,10 @@ func logResultsToTerminal(results []map[string]interface{}) {
 	for i, result := range results {
 		log.Printf("\n📋 Result #%d:\n", i+1)
 		log.Println(strings.Repeat("-", 60))
-
-		// Patient Information
 		log.Println("👤 PATIENT INFORMATION:")
 		log.Printf("   Patient ID:       %v\n", result["patient_id"])
 		log.Printf("   Patient Name:     %v\n", result["patient_name"])
 		log.Printf("   Accession Number: %v\n", result["accession_number"])
-
-		// Test Information
 		log.Println("\n🧪 TEST INFORMATION:")
 		log.Printf("   Test Code:        %v\n", result["test_code"])
 		log.Printf("   Test Name:        %v\n", result["test_name"])
@@ -496,28 +386,18 @@ func logResultsToTerminal(results []map[string]interface{}) {
 		log.Printf("   Reference Range:  %v\n", result["reference_range"])
 		log.Printf("   Abnormal Flags:   %v\n", result["abnormal_flags"])
 		log.Printf("   Result Status:    %v\n", result["result_status"])
-
-		// Message Information
 		log.Println("\n📨 MESSAGE INFORMATION:")
 		log.Printf("   Message ID:       %v\n", result["message_id"])
 		log.Printf("   Observation ID:   %v\n", result["observation_id"])
 		log.Printf("   Value Type:       %v\n", result["value_type"])
 		log.Printf("   Timestamp:        %v\n", result["timestamp"])
-
 		log.Println(strings.Repeat("-", 60))
 	}
 
-	// Also print as JSON for easy copy/paste
-	log.Println("\n📄 JSON FORMAT (for API integration):")
-	log.Println(strings.Repeat("-", 60))
+	log.Println("\n📄 JSON FORMAT:")
 	jsonData, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		log.Println("❌ Error formatting JSON:", err)
-	} else {
+	if err == nil {
 		log.Println(string(jsonData))
 	}
-
 	log.Println(strings.Repeat("*", 60))
-	log.Printf("✅ Total Results Logged: %d\n", len(results))
-	log.Println(strings.Repeat("*", 60) + "\n")
 }
