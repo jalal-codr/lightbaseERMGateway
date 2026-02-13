@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -42,23 +43,128 @@ const (
 	ASTM_SERVER_ENDPOINT = "https://your-server.com/api/lis/astm-results"
 
 	// HL7 Configuration
-	HL7_COM_PORT        = "COM2"
+	HL7_COM_PORT        = "COM1" // SET TO SAME PORT AS ASTM IF SHARING, OR "" TO DISABLE
 	HL7_BAUD_RATE       = 9600
 	HL7_SERVER_ENDPOINT = "https://your-server.com/api/lis/hl7-results"
+
+	// Protocol Configuration
+	ENABLE_ASTM = true
+	ENABLE_HL7  = true
+
+	// If both protocols share the same port, they will run on a single listener
+	// Otherwise they run on separate ports
+
+	// Debug mode - set to true to see detailed logs
+	DEBUG_MODE = true
 )
 
 /*
-ENTRY POINT - Runs both ASTM and HL7 listeners
+ENTRY POINT - Runs protocols based on configuration
 */
 func main() {
 	log.Println("🚀 Starting Multi-Protocol LIS Application")
 	log.Println(strings.Repeat("=", 50))
 
-	// Start HL7 listener in separate goroutine
-	go StartHL7Listener()
+	// Check if protocols share the same port
+	samePort := (ASTM_COM_PORT == HL7_COM_PORT) && ENABLE_ASTM && ENABLE_HL7
 
-	// Start ASTM listener in main goroutine
-	StartASTMListener()
+	if samePort {
+		log.Println("📡 ASTM and HL7 sharing port:", ASTM_COM_PORT)
+		StartCombinedListener()
+	} else {
+		// Start HL7 listener in separate goroutine if enabled and different port
+		if ENABLE_HL7 && HL7_COM_PORT != "" {
+			go StartHL7Listener()
+		}
+
+		// Start ASTM listener in main goroutine if enabled
+		if ENABLE_ASTM && ASTM_COM_PORT != "" {
+			StartASTMListener()
+		} else {
+			// If ASTM disabled, keep app running
+			select {}
+		}
+	}
+}
+
+// ============================================================================
+// COMBINED PROTOCOL HANDLER (Same Port)
+// ============================================================================
+
+func StartCombinedListener() {
+	mode := &serial.Mode{
+		BaudRate: ASTM_BAUD_RATE,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
+
+	port, err := serial.Open(ASTM_COM_PORT, mode)
+	if err != nil {
+		log.Fatal("❌ Failed to open serial port:", err)
+	}
+	defer port.Close()
+
+	log.Println("✅ Combined Listener active on", ASTM_COM_PORT)
+
+	readBuffer := make([]byte, 4096)
+	var astmFrameBuffer bytes.Buffer
+	var hl7MessageBuffer bytes.Buffer
+	inHL7Message := false
+
+	for {
+		n, err := port.Read(readBuffer)
+		if err != nil {
+			log.Println("Read error:", err)
+			continue
+		}
+
+		if DEBUG_MODE && n > 0 {
+			log.Printf("[DEBUG] Received %d bytes: %s\n", n, hex.EncodeToString(readBuffer[:n]))
+		}
+
+		for _, b := range readBuffer[:n] {
+			// Check for HL7 MLLP start
+			if b == VT {
+				inHL7Message = true
+				hl7MessageBuffer.Reset()
+				log.Println("➡️ [HL7] Message Start")
+				continue
+			}
+
+			// If in HL7 message
+			if inHL7Message {
+				if b == FS {
+					inHL7Message = false
+					log.Println("⬅️ [HL7] Message End")
+					processHL7Message(hl7MessageBuffer.String(), port)
+					continue
+				}
+				hl7MessageBuffer.WriteByte(b)
+				continue
+			}
+
+			// Otherwise, process as ASTM
+			switch b {
+			case ENQ:
+				log.Println("➡️ [ASTM] ENQ received")
+				port.Write([]byte{ACK})
+
+			case STX:
+				astmFrameBuffer.Reset()
+
+			case ETX, ETB:
+				port.Write([]byte{ACK})
+				processASTMFrame(astmFrameBuffer.String())
+
+			case EOT:
+				log.Println("⬅️ [ASTM] EOT received")
+
+			default:
+				astmFrameBuffer.WriteByte(b)
+			}
+		}
+	}
 }
 
 // ============================================================================
@@ -75,7 +181,9 @@ func StartASTMListener() {
 
 	port, err := serial.Open(ASTM_COM_PORT, mode)
 	if err != nil {
-		log.Fatal("❌ Failed to open ASTM serial port:", err)
+		log.Println("⚠️ ASTM port not available:", err)
+		log.Println("ASTM listener disabled")
+		select {} // Block forever
 	}
 	defer port.Close()
 
@@ -172,6 +280,10 @@ func getASTMField(fields [][]byte, index int) []byte {
 }
 
 func sendASTMToServer(results []map[string]interface{}) {
+	if DEBUG_MODE {
+		fmt.Println("[DEBUG] ASTM Results:", results)
+	}
+
 	payload, err := json.Marshal(results)
 	if err != nil {
 		log.Println("❌ JSON error:", err)
@@ -211,7 +323,9 @@ func StartHL7Listener() {
 
 	port, err := serial.Open(HL7_COM_PORT, mode)
 	if err != nil {
-		log.Fatal("❌ Failed to open HL7 serial port:", err)
+		log.Println("⚠️ HL7 port not available:", err)
+		log.Println("HL7 listener disabled")
+		return
 	}
 	defer port.Close()
 
@@ -224,26 +338,49 @@ func StartHL7Listener() {
 	for {
 		n, err := port.Read(readBuffer)
 		if err != nil {
-			log.Println("HL7 Read error:", err)
+			log.Println("❌ HL7 Read error:", err)
+			time.Sleep(1 * time.Second)
 			continue
 		}
 
+		if DEBUG_MODE && n > 0 {
+			log.Printf("[DEBUG] HL7 Received %d bytes: %s\n", n, hex.EncodeToString(readBuffer[:n]))
+		}
+
 		for _, b := range readBuffer[:n] {
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] Processing byte: 0x%02X (%c)\n", b, printable(b))
+			}
+
 			switch b {
 			case VT:
 				inMessage = true
 				messageBuffer.Reset()
-				log.Println("➡️ [HL7] Message Start")
+				log.Println("➡️ [HL7] Message Start (VT received)")
 
 			case FS:
 				if inMessage {
 					inMessage = false
+					log.Println("⬅️ [HL7] Message End (FS received)")
 					processHL7Message(messageBuffer.String(), port)
+				} else {
+					log.Println("⚠️ [HL7] FS received but not in message")
 				}
 
 			case CR:
 				if inMessage {
 					messageBuffer.WriteByte(b)
+					if DEBUG_MODE {
+						log.Println("[DEBUG] CR added to message buffer")
+					}
+				}
+
+			case LF:
+				if inMessage {
+					// Some systems send CRLF
+					if DEBUG_MODE {
+						log.Println("[DEBUG] LF received (ignored)")
+					}
 				}
 
 			default:
@@ -257,52 +394,102 @@ func StartHL7Listener() {
 
 func processHL7Message(message string, port serial.Port) {
 	log.Println("📦 [HL7] Message Received")
+	log.Println("=" + strings.Repeat("=", 70))
+
+	if DEBUG_MODE {
+		log.Println("[DEBUG] Raw message:")
+		log.Println(message)
+		log.Println("=" + strings.Repeat("=", 70))
+	}
 
 	results := parseHL7(message)
 
 	// Send ACK back to instrument
 	ack := generateHL7ACK(message)
-	ackBytes := []byte{VT}
-	ackBytes = append(ackBytes, []byte(ack)...)
-	ackBytes = append(ackBytes, FS, CR)
 
-	port.Write(ackBytes)
-	log.Println("✅ [HL7] ACK sent")
+	if ack == "" {
+		log.Println("⚠️ [HL7] Could not generate ACK - invalid message format")
+	} else {
+		ackBytes := []byte{VT}
+		ackBytes = append(ackBytes, []byte(ack)...)
+		ackBytes = append(ackBytes, FS, CR)
+
+		_, err := port.Write(ackBytes)
+		if err != nil {
+			log.Println("❌ [HL7] Error sending ACK:", err)
+		} else {
+			log.Println("✅ [HL7] ACK sent")
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] ACK: %s\n", ack)
+			}
+		}
+	}
 
 	if len(results) > 0 {
 		sendHL7ToServer(results)
 	} else {
 		log.Println("⚠️ No results found in HL7 message")
+		if DEBUG_MODE {
+			log.Println("[DEBUG] Check if OBX segments are present")
+		}
 	}
 }
 
 func parseHL7(message string) []map[string]interface{} {
+	message = strings.ReplaceAll(message, "\r\n", "\r")
 	segments := strings.Split(message, string(CR))
+
 	results := []map[string]interface{}{}
 
 	var patientID, patientName, accessionNumber string
 	var messageControlID string
 
-	for _, segment := range segments {
+	if DEBUG_MODE {
+		log.Printf("[DEBUG] Found %d segments\n", len(segments))
+	}
+
+	for i, segment := range segments {
+		segment = strings.TrimSpace(segment)
 		if len(segment) == 0 {
 			continue
 		}
 
+		if DEBUG_MODE {
+			log.Printf("[DEBUG] Segment %d: %s\n", i, segment)
+		}
+
 		fields := strings.Split(segment, "|")
+		if len(fields) == 0 {
+			continue
+		}
+
 		segmentType := fields[0]
 
 		switch segmentType {
 		case "MSH":
 			messageControlID = getHL7Field(fields, 9)
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] MSH - Message Control ID: %s\n", messageControlID)
+			}
 
 		case "PID":
 			patientID = getHL7Field(fields, 3)
 			patientName = getHL7Field(fields, 5)
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] PID - Patient ID: %s, Name: %s\n", patientID, patientName)
+			}
 
 		case "OBR":
 			accessionNumber = getHL7Field(fields, 2)
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] OBR - Accession: %s\n", accessionNumber)
+			}
 
 		case "OBX":
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] OBX found with %d fields\n", len(fields))
+			}
+
 			result := map[string]interface{}{
 				"patient_id":       patientID,
 				"patient_name":     patientName,
@@ -320,6 +507,11 @@ func parseHL7(message string) []map[string]interface{} {
 				"timestamp":        parseHL7DateTime(getHL7Field(fields, 14)),
 			}
 			results = append(results, result)
+
+			if DEBUG_MODE {
+				log.Printf("[DEBUG] Parsed OBX: Test=%s, Value=%s\n",
+					result["test_code"], result["value"])
+			}
 		}
 	}
 
@@ -330,7 +522,7 @@ func getHL7Field(fields []string, index int) string {
 	if index >= len(fields) {
 		return ""
 	}
-	return fields[index]
+	return strings.TrimSpace(fields[index])
 }
 
 func parseHL7Component(field string, componentIndex int) string {
@@ -338,10 +530,11 @@ func parseHL7Component(field string, componentIndex int) string {
 	if componentIndex >= len(components) {
 		return ""
 	}
-	return components[componentIndex]
+	return strings.TrimSpace(components[componentIndex])
 }
 
 func parseHL7DateTime(hl7DateTime string) string {
+	hl7DateTime = strings.TrimSpace(hl7DateTime)
 	if len(hl7DateTime) < 8 {
 		return time.Now().Format(time.RFC3339)
 	}
@@ -364,17 +557,23 @@ func parseHL7DateTime(hl7DateTime string) string {
 }
 
 func generateHL7ACK(originalMessage string) string {
+	originalMessage = strings.ReplaceAll(originalMessage, "\r\n", "\r")
 	segments := strings.Split(originalMessage, string(CR))
+
 	var mshFields []string
 
 	for _, segment := range segments {
+		segment = strings.TrimSpace(segment)
 		if strings.HasPrefix(segment, "MSH") {
 			mshFields = strings.Split(segment, "|")
 			break
 		}
 	}
 
-	if len(mshFields) == 0 {
+	if len(mshFields) < 10 {
+		if DEBUG_MODE {
+			log.Printf("[DEBUG] Invalid MSH segment, only %d fields\n", len(mshFields))
+		}
 		return ""
 	}
 
@@ -407,17 +606,23 @@ func generateHL7ACK(originalMessage string) string {
 	)
 	ack += string(CR)
 
-	ack += fmt.Sprintf("MSA%sAA%s%s%s",
+	ack += fmt.Sprintf("MSA%sAA%s%s",
 		fieldSeparator,
 		fieldSeparator,
 		messageControlID,
-		fieldSeparator,
 	)
 
 	return ack
 }
 
 func sendHL7ToServer(results []map[string]interface{}) {
+	if DEBUG_MODE {
+		log.Println("[DEBUG] Sending HL7 results to server:")
+		for i, r := range results {
+			log.Printf("[DEBUG] Result %d: %+v\n", i+1, r)
+		}
+	}
+
 	payload, err := json.Marshal(results)
 	if err != nil {
 		log.Println("❌ JSON error:", err)
@@ -441,4 +646,11 @@ func sendHL7ToServer(results []map[string]interface{}) {
 	defer resp.Body.Close()
 
 	log.Println("✅ [HL7] Results forwarded:", resp.Status)
+}
+
+func printable(b byte) rune {
+	if b >= 32 && b <= 126 {
+		return rune(b)
+	}
+	return '.'
 }
