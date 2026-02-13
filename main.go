@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"strings"
 	"time"
 )
@@ -26,103 +25,104 @@ const (
 )
 
 /*
-CONFIGURATION - CHANGE THESE FOR YOUR SETUP
+CONFIGURATION - EXTRACTED FROM YOUR DEVICE
 */
 const (
-	// TCP/IP Configuration
-	LISTEN_ADDRESS = "0.0.0.0:7007" // Listen on all interfaces, port 7007
-
-	// Or if you need to CONNECT to the LIS (client mode):
-	// LIS_ADDRESS = "192.168.1.100:7007" // IP and port of your LIS system
-
-	// Server endpoint to forward results
-	HL7_SERVER_ENDPOINT = "https://your-server.com/api/lis/hl7-results"
+	// LIS DEVICE IP AND PORT - From your device configuration screen
+	LIS_DEVICE_IP      = "192.168.1.10"
+	LIS_DEVICE_PORT    = "7007"
+	LIS_DEVICE_ADDRESS = LIS_DEVICE_IP + ":" + LIS_DEVICE_PORT
 
 	// Debug mode
 	DEBUG_MODE = true
 
-	// Server mode: true = listen for connections, false = connect to LIS
-	SERVER_MODE = true
+	// Client mode: Connect TO the LIS device
+	SERVER_MODE = false
+
+	// Log results to terminal
+	LOG_TO_TERMINAL = true
 )
 
 /*
 ENTRY POINT
 */
 func main() {
-	log.Println("🚀 Starting HL7 TCP/IP Listener")
+	log.Println("🚀 Starting HL7 TCP/IP Client")
 	log.Println(strings.Repeat("=", 60))
-	log.Printf("Mode: %s\n", getMode())
-	log.Printf("Address: %s\n", LISTEN_ADDRESS)
-	log.Println(strings.Repeat("=", 60))
+	log.Printf("Mode: CLIENT (connecting TO LIS device)\n")
+	log.Printf("LIS Device IP: %s\n", LIS_DEVICE_IP)
+	log.Printf("LIS Device Port: %s\n", LIS_DEVICE_PORT)
+	log.Printf("Full Address: %s\n", LIS_DEVICE_ADDRESS)
+	log.Printf("Protocol: HL7 MLLP\n")
+	log.Printf("Results will be: LOGGED TO TERMINAL\n")
 
-	if SERVER_MODE {
-		// Listen for incoming connections from LIS
-		startServer()
-	} else {
-		// Connect to LIS as client
-		startClient()
-	}
+	// Print local IP addresses for reference
+	printLocalIPs()
+
+	log.Println(strings.Repeat("=", 60))
+	log.Println("⏳ Starting connection attempts...")
+
+	// Connect to LIS device
+	startClient()
 }
 
-func getMode() string {
-	if SERVER_MODE {
-		return "SERVER (waiting for LIS to connect)"
-	}
-	return "CLIENT (connecting to LIS)"
-}
-
-// ============================================================================
-// SERVER MODE - Listen for connections from LIS
-// ============================================================================
-
-func startServer() {
-	listener, err := net.Listen("tcp", LISTEN_ADDRESS)
+func printLocalIPs() {
+	log.Println("\n📡 This Computer's IP Addresses:")
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		log.Fatal("❌ Failed to start server:", err)
+		log.Println("   Could not get local IPs:", err)
+		return
 	}
-	defer listener.Close()
 
-	log.Printf("✅ Server listening on %s\n", LISTEN_ADDRESS)
-	log.Println("⏳ Waiting for LIS to connect...")
-	log.Println(strings.Repeat("=", 60))
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Println("❌ Accept error:", err)
-			continue
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				log.Printf("   ℹ️  %s\n", ipnet.IP.String())
+			}
 		}
-
-		log.Printf("\n🔔 NEW CONNECTION from %s\n", conn.RemoteAddr())
-		log.Println(strings.Repeat("-", 60))
-
-		// Handle connection in goroutine to support multiple simultaneous connections
-		go handleConnection(conn)
 	}
+	log.Println()
 }
 
 // ============================================================================
-// CLIENT MODE - Connect to LIS
+// CLIENT MODE - Connect to LIS Device at 192.168.1.10:7007
 // ============================================================================
 
 func startClient() {
-	for {
-		log.Printf("🔌 Connecting to LIS at %s...\n", LISTEN_ADDRESS)
+	retryCount := 0
 
-		conn, err := net.Dial("tcp", LISTEN_ADDRESS)
+	for {
+		retryCount++
+		log.Printf("\n🔌 Attempt #%d: Connecting to LIS device at %s...\n", retryCount, LIS_DEVICE_ADDRESS)
+
+		conn, err := net.DialTimeout("tcp", LIS_DEVICE_ADDRESS, 10*time.Second)
 		if err != nil {
 			log.Println("❌ Connection failed:", err)
+
+			if retryCount == 1 {
+				log.Println("\n⚠️  TROUBLESHOOTING TIPS:")
+				log.Println("   1. Make sure the LIS device is powered on")
+				log.Println("   2. Verify both devices are on the same network (192.168.1.x)")
+				log.Println("   3. Check that HL7 communication is enabled on the device")
+				log.Printf("   4. Try pinging the device first: ping %s\n", LIS_DEVICE_IP)
+				log.Println("   5. Check if Windows Firewall is blocking the connection")
+				log.Println("   6. Verify the device is set to 'Auto Comm' mode (if applicable)")
+				log.Println()
+			}
+
 			log.Println("⏳ Retrying in 5 seconds...")
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		log.Printf("✅ Connected to %s\n", conn.RemoteAddr())
+		retryCount = 0 // Reset on successful connection
+		log.Printf("✅ Connected to LIS device at %s\n", conn.RemoteAddr())
+		log.Printf("   Local connection from: %s\n", conn.LocalAddr())
 		log.Println(strings.Repeat("=", 60))
 
 		handleConnection(conn)
 
-		log.Println("⚠️ Connection closed, reconnecting...")
+		log.Println("\n⚠️ Connection closed by device, reconnecting in 2 seconds...")
 		time.Sleep(2 * time.Second)
 	}
 }
@@ -139,20 +139,47 @@ func handleConnection(conn net.Conn) {
 	inMessage := false
 	byteCount := 0
 
+	log.Println("\n📊 Connection established, listening for HL7 data from device...")
+	log.Println("💡 TIP: Run a test on the device to trigger result transmission")
+	log.Println(strings.Repeat("-", 60))
+
+	// Set read timeout to detect if connection is idle
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	lastActivity := time.Now()
+
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Check if we've had recent activity
+				if time.Since(lastActivity) > 30*time.Second {
+					log.Println("\n⏰ No data received for 30 seconds")
+					log.Println("💡 The device is connected but not sending data")
+					log.Println("   Try running a test or checking the 'Auto Comm' setting")
+				}
+				// Reset timeout and continue
+				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+				continue
+			}
+
 			if err != io.EOF {
 				log.Println("❌ Read error:", err)
 			} else {
-				log.Println("📡 Connection closed by remote")
+				log.Println("📡 Connection closed by LIS device")
 			}
 			return
 		}
 
+		lastActivity = time.Now()
+		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		byteCount++
 
-		if DEBUG_MODE {
+		// Log first few bytes to confirm data reception
+		if byteCount == 1 {
+			log.Println("\n✅ Data received from device!")
+		}
+
+		if DEBUG_MODE && byteCount <= 100 { // Limit debug output for first 100 bytes
 			log.Printf("Byte %d: 0x%02X (%s)\n", byteCount, b, byteDescription(b))
 		}
 
@@ -171,6 +198,7 @@ func handleConnection(conn net.Conn) {
 				log.Println("⬅️ [HL7] Message End (FS received)")
 				processHL7Message(messageBuffer.String(), conn)
 				messageBuffer.Reset()
+				byteCount = 0 // Reset for next message
 			}
 
 		case CR:
@@ -180,13 +208,16 @@ func handleConnection(conn net.Conn) {
 
 		case LF:
 			// Some systems send CRLF, usually ignore LF
-			if inMessage && DEBUG_MODE {
+			if inMessage && DEBUG_MODE && byteCount <= 100 {
 				log.Println("   [LF received, ignoring]")
 			}
 
 		default:
 			if inMessage {
 				messageBuffer.WriteByte(b)
+			} else if DEBUG_MODE && byteCount <= 20 {
+				// Data received outside of message boundaries
+				log.Printf("⚠️  Unexpected byte outside message: 0x%02X (%s)\n", b, byteDescription(b))
 			}
 		}
 	}
@@ -215,7 +246,7 @@ func byteDescription(b byte) string {
 // ============================================================================
 
 func processHL7Message(message string, conn net.Conn) {
-	log.Println("\n📦 [HL7] MESSAGE RECEIVED")
+	log.Println("\n📦 [HL7] MESSAGE RECEIVED FROM DEVICE")
 	log.Println(strings.Repeat("=", 60))
 
 	if DEBUG_MODE {
@@ -232,7 +263,7 @@ func processHL7Message(message string, conn net.Conn) {
 	// Parse HL7 message
 	results := parseHL7(message)
 
-	// Send ACK back
+	// Send ACK back to device
 	ack := generateHL7ACK(message)
 	if ack != "" {
 		ackBytes := []byte{VT}
@@ -243,7 +274,7 @@ func processHL7Message(message string, conn net.Conn) {
 		if err != nil {
 			log.Println("❌ Error sending ACK:", err)
 		} else {
-			log.Println("✅ [HL7] ACK sent")
+			log.Println("✅ [HL7] ACK sent back to device")
 			if DEBUG_MODE {
 				log.Printf("ACK Content:\n%s\n", ack)
 			}
@@ -252,10 +283,10 @@ func processHL7Message(message string, conn net.Conn) {
 		log.Println("⚠️ Could not generate ACK - invalid message format")
 	}
 
-	// Forward results to server
+	// Log results to terminal
 	if len(results) > 0 {
-		log.Printf("✅ Parsed %d result(s)\n", len(results))
-		sendHL7ToServer(results)
+		log.Printf("\n✅ Parsed %d result(s) from message\n", len(results))
+		logResultsToTerminal(results)
 	} else {
 		log.Println("⚠️ No OBX results found in message")
 	}
@@ -438,36 +469,55 @@ func generateHL7ACK(originalMessage string) string {
 	return ack
 }
 
-func sendHL7ToServer(results []map[string]interface{}) {
-	log.Println("\n📤 Forwarding to server...")
+// ============================================================================
+// TERMINAL LOGGING - Log results in a nice formatted way
+// ============================================================================
 
-	if DEBUG_MODE {
-		for i, r := range results {
-			log.Printf("  Result %d: %+v\n", i+1, r)
-		}
+func logResultsToTerminal(results []map[string]interface{}) {
+	log.Println("\n" + strings.Repeat("*", 60))
+	log.Println("*** LAB RESULTS - TERMINAL OUTPUT ***")
+	log.Println(strings.Repeat("*", 60))
+
+	for i, result := range results {
+		log.Printf("\n📋 Result #%d:\n", i+1)
+		log.Println(strings.Repeat("-", 60))
+
+		// Patient Information
+		log.Println("👤 PATIENT INFORMATION:")
+		log.Printf("   Patient ID:       %v\n", result["patient_id"])
+		log.Printf("   Patient Name:     %v\n", result["patient_name"])
+		log.Printf("   Accession Number: %v\n", result["accession_number"])
+
+		// Test Information
+		log.Println("\n🧪 TEST INFORMATION:")
+		log.Printf("   Test Code:        %v\n", result["test_code"])
+		log.Printf("   Test Name:        %v\n", result["test_name"])
+		log.Printf("   Value:            %v %v\n", result["value"], result["units"])
+		log.Printf("   Reference Range:  %v\n", result["reference_range"])
+		log.Printf("   Abnormal Flags:   %v\n", result["abnormal_flags"])
+		log.Printf("   Result Status:    %v\n", result["result_status"])
+
+		// Message Information
+		log.Println("\n📨 MESSAGE INFORMATION:")
+		log.Printf("   Message ID:       %v\n", result["message_id"])
+		log.Printf("   Observation ID:   %v\n", result["observation_id"])
+		log.Printf("   Value Type:       %v\n", result["value_type"])
+		log.Printf("   Timestamp:        %v\n", result["timestamp"])
+
+		log.Println(strings.Repeat("-", 60))
 	}
 
-	payload, err := json.Marshal(results)
+	// Also print as JSON for easy copy/paste
+	log.Println("\n📄 JSON FORMAT (for API integration):")
+	log.Println(strings.Repeat("-", 60))
+	jsonData, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
-		log.Println("❌ JSON error:", err)
-		return
+		log.Println("❌ Error formatting JSON:", err)
+	} else {
+		log.Println(string(jsonData))
 	}
 
-	req, err := http.NewRequest("POST", HL7_SERVER_ENDPOINT, bytes.NewBuffer(payload))
-	if err != nil {
-		log.Println("❌ Request error:", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Println("❌ Server unreachable:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	log.Println("✅ Results forwarded:", resp.Status)
+	log.Println(strings.Repeat("*", 60))
+	log.Printf("✅ Total Results Logged: %d\n", len(results))
+	log.Println(strings.Repeat("*", 60) + "\n")
 }
