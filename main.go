@@ -10,6 +10,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"go.bug.st/serial"
 )
 
 /*
@@ -23,14 +25,59 @@ const (
 )
 
 /*
+ASTM CONTROL CHARACTERS
+*/
+const (
+	ENQ = 0x05 // Enquiry   — instrument wants to send
+	ACK = 0x06 // Acknowledge
+	NAK = 0x15 // Negative Acknowledge
+	STX = 0x02 // Start of Text
+	ETX = 0x03 // End of Text (last frame)
+	ETB = 0x17 // End of Transmission Block (intermediate frame)
+	EOT = 0x04 // End of Transmission
+)
+
+/*
 CONFIGURATION
 */
 const (
-	PC_IP           = "192.168.110.193"
+	PC_IP           = "192.168.1.193"
 	LISTEN_PORT     = "7007"
 	DEBUG_MODE      = true
 	LOG_TO_TERMINAL = true
+
+	ASTM_COM_PORT  = "COM1"
+	ASTM_BAUD_RATE = 115200
+	ASTM_TCP_PORT  = "5000" // TCP port the instrument connects to
 )
+
+// astmPort is satisfied by both serial.Port and tcpASTMConn,
+// allowing handleASTMPort / handleASTMSession to work over either transport.
+type astmPort interface {
+	Read(b []byte) (int, error)
+	Write(b []byte) (int, error)
+	SetReadTimeout(t time.Duration) error
+}
+
+// tcpASTMConn wraps a net.Conn so it satisfies astmPort.
+// SetReadTimeout translates to an absolute deadline, and Read normalises
+// timeout errors to (0, nil) to match serial-port behaviour.
+type tcpASTMConn struct{ conn net.Conn }
+
+func (t *tcpASTMConn) Read(b []byte) (int, error) {
+	n, err := t.conn.Read(b)
+	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return 0, nil
+		}
+		return n, err
+	}
+	return n, nil
+}
+func (t *tcpASTMConn) Write(b []byte) (int, error) { return t.conn.Write(b) }
+func (t *tcpASTMConn) SetReadTimeout(d time.Duration) error {
+	return t.conn.SetReadDeadline(time.Now().Add(d))
+}
 
 /*
 ENTRY POINT
@@ -44,7 +91,13 @@ func main() {
 	// Print local IP addresses
 	printLocalIPs()
 
-	// Start server
+	// Start ASTM serial listener on COM1 (non-blocking)
+	go startASTMListener()
+
+	// Start ASTM TCP listener (instrument connects over Ethernet)
+	go startASTMTCPListener()
+
+	// Start HL7 TCP server (blocks)
 	startServer(fullAddress)
 }
 
@@ -98,8 +151,10 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	var messageBuffer bytes.Buffer
+	var pingBuffer bytes.Buffer
 	inMessage := false
 	byteCount := 0
+	messagesReceived := 0
 	lastActivity := time.Now()
 
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -116,9 +171,15 @@ func handleConnection(conn net.Conn) {
 				conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 				continue
 			}
-			if err != nil {
-				log.Println("❌ Read error:", err)
+			// Connection closed — determine if this was a ping
+			if messagesReceived == 0 {
+				if pingBuffer.Len() > 0 {
+					log.Printf("\n🏓 [PING] LIS sent raw bytes (no HL7 framing): %q\n", pingBuffer.String())
+				} else {
+					log.Println("\n🏓 [PING] LIS connected and disconnected without sending HL7 data")
+				}
 			}
+			log.Println("🔌 Connection closed:", err)
 			return
 		}
 
@@ -133,11 +194,13 @@ func handleConnection(conn net.Conn) {
 		case VT:
 			inMessage = true
 			messageBuffer.Reset()
+			pingBuffer.Reset() // clear ping buffer — HL7 framing has started
 			log.Println("\n➡️ [HL7] Message Start (VT received)")
 
 		case FS:
 			if inMessage {
 				inMessage = false
+				messagesReceived++
 				log.Println("⬅️ [HL7] Message End (FS received)")
 				processHL7Message(messageBuffer.String(), conn)
 				messageBuffer.Reset()
@@ -157,6 +220,9 @@ func handleConnection(conn net.Conn) {
 		default:
 			if inMessage {
 				messageBuffer.WriteByte(b)
+			} else {
+				// Bytes outside HL7 framing — likely a ping/probe
+				pingBuffer.WriteByte(b)
 			}
 		}
 	}
@@ -400,4 +466,328 @@ func logResultsToTerminal(results []map[string]interface{}) {
 		log.Println(string(jsonData))
 	}
 	log.Println(strings.Repeat("*", 60))
+}
+
+// ============================================================================
+// ASTM TCP LISTENER — instruments that connect over Ethernet
+// ============================================================================
+
+func startASTMTCPListener() {
+	addr := "0.0.0.0:" + ASTM_TCP_PORT
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Printf("❌ [ASTM-TCP] Could not bind %s: %v\n", addr, err)
+		return
+	}
+	defer ln.Close()
+	log.Printf("📡 [ASTM-TCP] Listening on %s — waiting for instrument...\n", addr)
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Println("❌ [ASTM-TCP] Accept error:", err)
+			continue
+		}
+		log.Printf("🔌 [ASTM-TCP] Instrument connected: %s\n", conn.RemoteAddr())
+		go func(c net.Conn) {
+			defer c.Close()
+			handleASTMPort(&tcpASTMConn{conn: c})
+			log.Printf("🔌 [ASTM-TCP] Instrument disconnected: %s\n", c.RemoteAddr())
+		}(conn)
+	}
+}
+
+// ============================================================================
+// ASTM SERIAL LISTENER — COM1
+// ============================================================================
+
+func startASTMListener() {
+	mode := &serial.Mode{
+		BaudRate: ASTM_BAUD_RATE,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
+
+	log.Printf("📡 [ASTM] Opening %s at %d baud...\n", ASTM_COM_PORT, ASTM_BAUD_RATE)
+
+	for {
+		port, err := serial.Open(ASTM_COM_PORT, mode)
+		if err != nil {
+			log.Printf("❌ [ASTM] Could not open %s: %v — retrying in 5s\n", ASTM_COM_PORT, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		log.Printf("✅ [ASTM] %s open — waiting for ENQ from instrument...\n", ASTM_COM_PORT)
+		handleASTMPort(port)
+		port.Close()
+		log.Printf("⚠️  [ASTM] Session ended, reopening %s...\n", ASTM_COM_PORT)
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func handleASTMPort(port astmPort) {
+	buf := make([]byte, 1)
+
+	for {
+		port.SetReadTimeout(30 * time.Second)
+		n, err := port.Read(buf)
+		if err != nil {
+			log.Printf("⚠️  [ASTM] Port error: %v — closing port\n", err)
+			return
+		}
+		if n == 0 {
+			log.Println("[ASTM] Idle 30s — still listening for ENQ...")
+			continue
+		}
+
+		b := buf[0]
+		log.Printf("[ASTM] Received: 0x%02X (%s)\n", b, astmByteDesc(b))
+
+		if b == ENQ {
+			log.Println("\n📥 [ASTM] ENQ received — sending ACK")
+			if _, err := port.Write([]byte{ACK}); err != nil {
+				log.Println("❌ [ASTM] Failed to send ACK:", err)
+				return
+			}
+			handleASTMSession(port)
+		}
+	}
+}
+
+func handleASTMSession(port astmPort) {
+	type sState int
+	const (
+		sIdle    sState = iota
+		sInFrame
+		sTail
+	)
+
+	var fullMessage strings.Builder
+	var frame bytes.Buffer
+	frameCount := 0
+	tailCount := 0
+	lastEndByte := byte(0)
+	cur := sIdle
+	buf := make([]byte, 1)
+
+	readByte := func() (byte, bool) {
+		port.SetReadTimeout(10 * time.Second)
+		n, err := port.Read(buf)
+		if err != nil {
+			log.Printf("⚠️  [ASTM] Session read error: %v\n", err)
+			return 0, false
+		}
+		if n == 0 {
+			log.Println("⚠️  [ASTM] Session timed out — no data for 10s")
+			return 0, false
+		}
+		return buf[0], true
+	}
+
+	ackFrame := func() bool {
+		if _, err := port.Write([]byte{ACK}); err != nil {
+			log.Println("❌ [ASTM] Failed to ACK frame:", err)
+			return false
+		}
+		if lastEndByte == ETX {
+			log.Printf("✅ [ASTM] Last frame ACKed (%d total)\n", frameCount)
+		}
+		return true
+	}
+
+	handleIdleByte := func(b byte) bool {
+		switch b {
+		case STX:
+			frame.Reset()
+			cur = sInFrame
+		case EOT:
+			log.Println("📭 [ASTM] EOT received — transmission complete")
+			if fullMessage.Len() > 0 {
+				processASTMMessage(fullMessage.String())
+			} else {
+				log.Println("⚠️  [ASTM] EOT with no data collected")
+			}
+			return false
+		case ENQ:
+			log.Println("📥 [ASTM] Re-ENQ — sending ACK")
+			port.Write([]byte{ACK})
+			cur = sIdle
+		default:
+			log.Printf("[ASTM] Ignoring unexpected idle byte: 0x%02X\n", b)
+		}
+		return true
+	}
+
+	for {
+		b, ok := readByte()
+		if !ok {
+			return
+		}
+		log.Printf("[ASTM] state=%d  byte=0x%02X (%s)\n", cur, b, astmByteDesc(b))
+
+		switch cur {
+
+		case sIdle:
+			if !handleIdleByte(b) {
+				return
+			}
+
+		case sInFrame:
+			if b == ETX || b == ETB {
+				frameData := frame.String()
+				if len(frameData) > 1 {
+					data := frameData[1:]
+					fullMessage.WriteString(data)
+					frameCount++
+					log.Printf("📦 [ASTM] Frame %d received (%d bytes)\n", frameCount, len(data))
+					if DEBUG_MODE {
+						log.Printf("   %q\n", data)
+					}
+				}
+				lastEndByte = b
+				tailCount = 0
+				cur = sTail
+			} else {
+				frame.WriteByte(b)
+			}
+
+		case sTail:
+			tailCount++
+
+			if b == CR {
+				if !ackFrame() {
+					return
+				}
+				port.SetReadTimeout(200 * time.Millisecond)
+				ln, _ := port.Read(buf)
+				if ln > 0 && buf[0] != LF {
+					if !handleIdleByte(buf[0]) {
+						return
+					}
+				} else {
+					cur = sIdle
+				}
+
+			} else if b == STX || b == EOT || b == ENQ || b == ETX || b == ETB {
+				log.Printf("⚠️  [ASTM] Control byte 0x%02X in tail after %d bytes — ACKing and handling\n", b, tailCount)
+				if !ackFrame() {
+					return
+				}
+				if !handleIdleByte(b) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// ============================================================================
+// ASTM MESSAGE PROCESSING (E1394)
+// ============================================================================
+
+func processASTMMessage(message string) {
+	log.Println("\n📦 [ASTM] MESSAGE RECEIVED")
+	if DEBUG_MODE {
+		log.Println("Raw ASTM:\n", message)
+		log.Println(strings.Repeat("-", 60))
+	}
+
+	records := strings.Split(message, string(CR))
+	results := []map[string]interface{}{}
+
+	var patientID, patientName, orderID string
+
+	for _, record := range records {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+
+		fields := strings.Split(record, "|")
+		if len(fields) == 0 {
+			continue
+		}
+		recordType := fields[0]
+
+		switch recordType {
+		case "H":
+			log.Println("[ASTM] Header record")
+		case "P":
+			patientID = getASTMField(fields, 3)
+			patientName = getASTMField(fields, 5)
+			log.Printf("[ASTM] Patient: ID=%s  Name=%s\n", patientID, patientName)
+		case "O":
+			orderID = getASTMField(fields, 2)
+			log.Printf("[ASTM] Order: ID=%s\n", orderID)
+		case "R":
+			result := map[string]interface{}{
+				"patient_id":      patientID,
+				"patient_name":    patientName,
+				"order_id":        orderID,
+				"test_code":       parseASTMComponent(getASTMField(fields, 2), 3),
+				"test_name":       parseASTMComponent(getASTMField(fields, 2), 4),
+				"value":           getASTMField(fields, 3),
+				"units":           getASTMField(fields, 4),
+				"reference_range": getASTMField(fields, 5),
+				"abnormal_flags":  getASTMField(fields, 6),
+				"result_status":   getASTMField(fields, 8),
+				"timestamp":       parseHL7DateTime(getASTMField(fields, 12)),
+				"protocol":        "ASTM",
+			}
+			results = append(results, result)
+		case "L":
+			log.Println("[ASTM] Terminator record")
+		}
+	}
+
+	if LOG_TO_TERMINAL && len(results) > 0 {
+		logResultsToTerminal(results)
+	} else if len(results) == 0 {
+		log.Println("⚠️  [ASTM] No R (result) records found in message")
+	}
+}
+
+func getASTMField(fields []string, index int) string {
+	if index >= len(fields) {
+		return ""
+	}
+	return strings.TrimSpace(fields[index])
+}
+
+func parseASTMComponent(field string, componentIndex int) string {
+	components := strings.Split(field, "^")
+	if componentIndex >= len(components) {
+		return ""
+	}
+	return strings.TrimSpace(components[componentIndex])
+}
+
+func astmByteDesc(b byte) string {
+	switch b {
+	case ENQ:
+		return "ENQ"
+	case ACK:
+		return "ACK"
+	case NAK:
+		return "NAK"
+	case STX:
+		return "STX"
+	case ETX:
+		return "ETX"
+	case ETB:
+		return "ETB"
+	case EOT:
+		return "EOT"
+	case CR:
+		return "CR"
+	case LF:
+		return "LF"
+	default:
+		if b >= 32 && b <= 126 {
+			return fmt.Sprintf("'%c'", b)
+		}
+		return "ctrl"
+	}
 }
