@@ -10,7 +10,7 @@ import (
 )
 
 // SendToExternalSaver sends parsed HL7 data to an external persistence service
-func SendToExternalSaver(payload types.HL7Payload, endpoint string) error {
+func SendToExternalSaver(payload types.HL7Message, endpoint string) error {
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal HL7 payload: %w", err)

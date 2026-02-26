@@ -38,36 +38,36 @@ func ParseMessage(message string) []map[string]interface{} {
 			accessionNumber = getField(fields, 2)
 		case "OBX":
 			result := map[string]interface{}{
-				"patient_id":       patientID,
-				"patient_name":     patientName,
-				"accession_number": accessionNumber,
-				"message_id":       messageControlID,
-				"observation_id":   getField(fields, 1),
-				"value_type":       getField(fields, 2),
-				"test_code":        parseComponent(getField(fields, 3), 0),
-				"test_name":        parseComponent(getField(fields, 3), 1),
-				"value":            getField(fields, 5),
-				"units":            getField(fields, 6),
-				"reference_range":  getField(fields, 7),
-				"abnormal_flags":   getField(fields, 8),
-				"result_status":    getField(fields, 11),
-				"timestamp":        parseDateTime(getField(fields, 14)),
+				"observation_id":  getField(fields, 1),
+				"test_code":       parseComponent(getField(fields, 3), 0),
+				"test_name":       parseComponent(getField(fields, 3), 1),
+				"value":           getField(fields, 5),
+				"units":           getField(fields, 6),
+				"reference_range": getField(fields, 7),
+				"abnormal_flags":  getField(fields, 8),
+				"result_status":   getField(fields, 11),
+				"timestamp":       parseDateTime(getField(fields, 14)),
 			}
 			results = append(results, result)
 		}
 	}
-	// 🔹 ADAPTER: build typed payload
-	payload := types.HL7Payload{
+
+	// Build HL7Message (matches server's expected type exactly)
+	now := time.Now().Format(time.RFC3339)
+	payload := types.HL7Message{
 		Source:     "hl7_bridge",
 		MessageID:  messageControlID,
-		ReceivedAt: time.Now().Format(time.RFC3339),
+		ReceivedAt: now,
+		CreatedAt:  now,
+		Patient: types.HL7Patient{
+			ID:   patientID,
+			Name: patientName,
+		},
+		Order: types.HL7Order{
+			AccessionNumber: accessionNumber,
+		},
 	}
 
-	payload.Patient.ID = patientID
-	payload.Patient.Name = patientName
-	payload.Order.AccessionNumber = accessionNumber
-
-	// convert map results → typed results
 	for _, r := range results {
 		payload.Results = append(payload.Results, types.HL7Result{
 			ObservationID:  r["observation_id"].(string),
@@ -82,7 +82,6 @@ func ParseMessage(message string) []map[string]interface{} {
 		})
 	}
 
-	// 🔹 SEND (async, non-blocking)
 	go func() {
 		if err := SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
 			log.Printf("HL7 forward failed [%s]: %v", messageControlID, err)
