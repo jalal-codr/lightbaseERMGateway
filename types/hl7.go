@@ -13,19 +13,19 @@ type HL7Result struct {
 }
 
 type HL7Patient struct {
-	ID   string `bson:"id" json:"id"`
-	Name string `bson:"name" json:"name"`
+	ID   string `bson:"id,omitempty" json:"id,omitempty"`
+	Name string `bson:"name,omitempty" json:"name,omitempty"`
 }
 
 type HL7Order struct {
-	AccessionNumber string `bson:"accession_number" json:"accession_number"`
+	AccessionNumber string `bson:"accession_number,omitempty" json:"accession_number,omitempty"`
 }
 
 type HL7Payload struct {
 	Source     string      `bson:"source" json:"source"`
 	MessageID  string      `bson:"message_id" json:"message_id"`
-	Patient    HL7Patient  `bson:"patient" json:"patient"`
-	Order      HL7Order    `bson:"order" json:"order"`
+	Patient    HL7Patient  `bson:"patient,omitempty" json:"patient,omitempty"`
+	Order      HL7Order    `bson:"order,omitempty" json:"order,omitempty"`
 	Results    []HL7Result `bson:"results" json:"results"`
 	ReceivedAt string      `bson:"received_at" json:"received_at"`
 }
@@ -34,8 +34,8 @@ type HL7Message struct {
 	ID         string      `bson:"_id,omitempty" json:"id,omitempty"`
 	Source     string      `bson:"source" json:"source"`
 	MessageID  string      `bson:"message_id" json:"message_id"`
-	Patient    HL7Patient  `bson:"patient" json:"patient"`
-	Order      HL7Order    `bson:"order" json:"order"`
+	Patient    HL7Patient  `bson:"patient,omitempty" json:"patient,omitempty"`
+	Order      HL7Order    `bson:"order,omitempty" json:"order,omitempty"`
 	Results    []HL7Result `bson:"results" json:"results"`
 	ReceivedAt string      `bson:"received_at" json:"received_at"`
 	CreatedAt  string      `bson:"created_at,omitempty" json:"created_at,omitempty"`
