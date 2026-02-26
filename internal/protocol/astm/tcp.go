@@ -34,7 +34,7 @@ func (t *TCPConn) SetReadTimeout(d time.Duration) error {
 
 // StartTCPListener starts the ASTM TCP listener
 func StartTCPListener() {
-	addr := "0.0.0.0:" + config.ASTMTCPPort
+	addr := config.PCIP + ":" + config.ASTMTCPPort
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Printf("❌ [ASTM-TCP] Could not bind %s: %v\n", addr, err)
