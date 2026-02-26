@@ -21,11 +21,12 @@ const (
 
 // Server configuration
 const (
-	PCIP          = "192.168.1.193"
-	ListenPort    = "7007"
-	DebugMode     = true
-	LogToTerminal = true
-	ASTMComPort   = "COM1"
-	ASTMBaudRate  = 115200
-	ASTMTCPPort   = "5000"
+	PCIP             = "192.168.1.193"
+	ListenPort       = "7007"
+	DebugMode        = true
+	LogToTerminal    = true
+	ASTMComPort      = "COM1"
+	ASTMBaudRate     = 115200
+	ASTMTCPPort      = "5000"
+	ExternalSaverURL = "http://localhost:8080/api/hl7"
 )

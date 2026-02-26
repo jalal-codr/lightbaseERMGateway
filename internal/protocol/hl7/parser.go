@@ -1,10 +1,12 @@
 package hl7
 
 import (
+	"log"
 	"strings"
 	"time"
 
 	"lightbaseEMRProxy/internal/config"
+	"lightbaseEMRProxy/types"
 )
 
 // ParseMessage parses an HL7 message and extracts lab results
@@ -54,6 +56,38 @@ func ParseMessage(message string) []map[string]interface{} {
 			results = append(results, result)
 		}
 	}
+	// 🔹 ADAPTER: build typed payload
+	payload := types.HL7Payload{
+		Source:     "hl7_bridge",
+		MessageID:  messageControlID,
+		ReceivedAt: time.Now().Format(time.RFC3339),
+	}
+
+	payload.Patient.ID = patientID
+	payload.Patient.Name = patientName
+	payload.Order.AccessionNumber = accessionNumber
+
+	// convert map results → typed results
+	for _, r := range results {
+		payload.Results = append(payload.Results, types.HL7Result{
+			ObservationID:  r["observation_id"].(string),
+			TestCode:       r["test_code"].(string),
+			TestName:       r["test_name"].(string),
+			Value:          r["value"].(string),
+			Units:          r["units"].(string),
+			ReferenceRange: r["reference_range"].(string),
+			AbnormalFlags:  r["abnormal_flags"].(string),
+			Status:         r["result_status"].(string),
+			Timestamp:      r["timestamp"].(string),
+		})
+	}
+
+	// 🔹 SEND (async, non-blocking)
+	go func() {
+		if err := SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
+			log.Printf("HL7 forward failed [%s]: %v", messageControlID, err)
+		}
+	}()
 
 	return results
 }
