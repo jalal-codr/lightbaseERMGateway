@@ -71,6 +71,9 @@ func HandlePort(port Port) {
 				return
 			}
 			handleSession(port)
+		} else if b == config.STX {
+			log.Println("📥 [ASTM] STX received — starting direct transmission (no ENQ)")
+			handleSessionDirect(port, b)
 		}
 	}
 }
@@ -187,6 +190,51 @@ func handleSession(port Port) {
 					return
 				}
 			}
+		}
+	}
+}
+
+func handleSessionDirect(port Port, firstByte byte) {
+	var fullMessage strings.Builder
+	buf := make([]byte, 1)
+
+	readByte := func() (byte, bool) {
+		port.SetReadTimeout(10 * time.Second)
+		n, err := port.Read(buf)
+		if err != nil {
+			log.Printf("⚠️  [ASTM] Session read error: %v\n", err)
+			return 0, false
+		}
+		if n == 0 {
+			log.Println("⚠️  [ASTM] Session timed out — no data for 10s")
+			return 0, false
+		}
+		return buf[0], true
+	}
+
+	// Process the first STX we already received
+
+	for {
+		b, ok := readByte()
+		if !ok {
+			return
+		}
+
+		log.Printf("[ASTM] State=direct Byte=0x%02X (%s)\n", b, byteDesc(b))
+
+		if b == config.ETX || b == config.ETB {
+			log.Println("📭 [ASTM] Transmission complete — processing message")
+			if fullMessage.Len() > 0 {
+				ProcessMessage(fullMessage.String())
+			} else {
+				log.Println("⚠️  [ASTM] No data collected")
+			}
+			return
+		} else if b == config.CR || b == config.LF {
+			// Skip line endings
+			continue
+		} else {
+			fullMessage.WriteByte(b)
 		}
 	}
 }
