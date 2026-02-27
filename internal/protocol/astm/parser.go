@@ -22,7 +22,8 @@ func ProcessMessage(message string) {
 	}
 
 	// Standard ASTM processing
-	records := strings.Split(message, string(config.CR))
+	// Split by CR (0x0D) to get individual records
+	records := strings.Split(message, "\r")
 	results := []map[string]interface{}{}
 
 	var patientID, patientName, orderID string
@@ -42,26 +43,65 @@ func ProcessMessage(message string) {
 		recordType := fields[0]
 
 		switch recordType {
+		case "H":
+			// Header record - extract instrument info
+			instrumentInfo := getField(fields, 4)
+			log.Printf("[ASTM] Header: Instrument=%s\n", instrumentInfo)
 		case "P":
-			patientID = getField(fields, 3)
+			// Patient record - field 2 is usually patient ID
+			patientID = getField(fields, 2)
 			patientName = getField(fields, 5)
+			if patientID == "" {
+				patientID = getField(fields, 3)
+			}
 			log.Printf("[ASTM] Patient: ID=%s Name=%s\n", patientID, patientName)
 		case "O":
-			orderID = getField(fields, 2)
+			// Order record - field 2 contains specimen ID
+			specimenID := getField(fields, 2)
+			// Extract the first part before ^
+			orderID = parseComponent(specimenID, 0)
 			log.Printf("[ASTM] Order: ID=%s\n", orderID)
 		case "R":
+			// Result record
+			// Field 2: Test ID (format: code^name^type)
+			testInfo := getField(fields, 2)
+			testCode := parseComponent(testInfo, 0)
+			testName := parseComponent(testInfo, 1)
+
+			// Field 3: Result value (may contain range like 0.003^4.000)
+			resultValue := getField(fields, 3)
+			value := parseComponent(resultValue, 0)
+
+			// Field 4: Units
+			units := getField(fields, 4)
+
+			// Field 5: Reference range
+			refRange := getField(fields, 5)
+
+			// Field 6: Abnormal flags
+			abnormalFlags := getField(fields, 6)
+
+			// Field 8: Result status
+			resultStatus := getField(fields, 8)
+
+			// Field 12: Analysis timestamp
+			timestamp := parseDateTime(getField(fields, 12))
+
 			result := map[string]interface{}{
-				"test_code":       parseComponent(getField(fields, 2), 3),
-				"test_name":       parseComponent(getField(fields, 2), 4),
-				"value":           getField(fields, 3),
-				"units":           getField(fields, 4),
-				"reference_range": getField(fields, 5),
-				"abnormal_flags":  getField(fields, 6),
-				"result_status":   getField(fields, 8),
-				"timestamp":       parseDateTime(getField(fields, 12)),
+				"test_code":       testCode,
+				"test_name":       testName,
+				"value":           value,
+				"units":           units,
+				"reference_range": refRange,
+				"abnormal_flags":  abnormalFlags,
+				"result_status":   resultStatus,
+				"timestamp":       timestamp,
 			}
 			results = append(results, result)
-			log.Printf("[ASTM] Result added: %s = %s\n", result["test_name"], result["value"])
+			log.Printf("[ASTM] Result added: %s (%s) = %s %s\n", testName, testCode, value, units)
+		case "L":
+			// Terminator record
+			log.Printf("[ASTM] Terminator record received\n")
 		}
 	}
 
