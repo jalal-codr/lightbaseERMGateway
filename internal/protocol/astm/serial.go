@@ -62,6 +62,7 @@ func HandlePort(port Port) {
 		}
 
 		b := buf[0]
+		log.Printf("[ASTM] Byte received: 0x%02X (%s)\n", b, byteDesc(b))
 
 		if b == config.ENQ {
 			log.Println("📥 [ASTM] ENQ received — starting transmission")
@@ -108,6 +109,7 @@ func handleSession(port Port) {
 			log.Println("❌ [ASTM] Failed to ACK frame:", err)
 			return false
 		}
+		log.Println("✅ [ASTM] Frame ACKed")
 		return true
 	}
 
@@ -137,6 +139,8 @@ func handleSession(port Port) {
 			return
 		}
 
+		log.Printf("[ASTM] State=%d Byte=0x%02X (%s)\n", cur, b, byteDesc(b))
+
 		switch cur {
 		case idle:
 			if !handleIdleByte(b) {
@@ -150,6 +154,7 @@ func handleSession(port Port) {
 					data := frameData[1:]
 					fullMessage.WriteString(data)
 					frameCount++
+					log.Printf("📦 [ASTM] Frame %d collected (%d bytes)\n", frameCount, len(data))
 				}
 				tailCount = 0
 				cur = tail
