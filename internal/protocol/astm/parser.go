@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"lightbaseEMRProxy/internal/config"
-	"lightbaseEMRProxy/internal/logger"
 	"lightbaseEMRProxy/internal/protocol/hl7"
 	"lightbaseEMRProxy/types"
 )
@@ -62,18 +61,15 @@ func ProcessMessage(message string) {
 		}
 	}
 
-	if config.LogToTerminal && len(results) > 0 {
-		logger.LogResults(results)
-	} else if len(results) == 0 {
+	if len(results) == 0 {
 		log.Println("⚠️  [ASTM] No R (result) records found in message")
 		return
 	}
 
-	// Build typed payload
 	now := time.Now().Format(time.RFC3339)
 	payload := types.HL7Message{
 		Source:     "astm_bridge",
-		MessageID:  orderID, // use orderID as the message identifier
+		MessageID:  orderID,
 		ReceivedAt: now,
 		CreatedAt:  now,
 		Patient: types.HL7Patient{
@@ -87,7 +83,7 @@ func ProcessMessage(message string) {
 
 	for _, r := range results {
 		payload.Results = append(payload.Results, types.HL7Result{
-			ObservationID:  "", // ASTM R records have no direct observation ID
+			ObservationID:  "",
 			TestCode:       r["test_code"].(string),
 			TestName:       r["test_name"].(string),
 			Value:          r["value"].(string),
@@ -99,7 +95,6 @@ func ProcessMessage(message string) {
 		})
 	}
 
-	// Send async, non-blocking
 	go func() {
 		if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
 			log.Printf("❌ [ASTM] Forward failed [%s]: %v", orderID, err)
