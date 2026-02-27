@@ -58,15 +58,13 @@ func HandlePort(port Port) {
 			return
 		}
 		if n == 0 {
-			log.Println("[ASTM] Idle 30s — still listening for ENQ...")
 			continue
 		}
 
 		b := buf[0]
-		log.Printf("[ASTM] Received: 0x%02X (%s)\n", b, byteDesc(b))
 
 		if b == config.ENQ {
-			log.Println("\n📥 [ASTM] ENQ received — sending ACK")
+			log.Println("📥 [ASTM] ENQ received — starting transmission")
 			if _, err := port.Write([]byte{config.ACK}); err != nil {
 				log.Println("❌ [ASTM] Failed to send ACK:", err)
 				return
@@ -88,7 +86,6 @@ func handleSession(port Port) {
 	var frame bytes.Buffer
 	frameCount := 0
 	tailCount := 0
-	lastEndByte := byte(0)
 	cur := idle
 	buf := make([]byte, 1)
 
@@ -111,9 +108,6 @@ func handleSession(port Port) {
 			log.Println("❌ [ASTM] Failed to ACK frame:", err)
 			return false
 		}
-		if lastEndByte == config.ETX {
-			log.Printf("✅ [ASTM] Last frame ACKed (%d total)\n", frameCount)
-		}
 		return true
 	}
 
@@ -123,19 +117,16 @@ func handleSession(port Port) {
 			frame.Reset()
 			cur = inFrame
 		case config.EOT:
-			log.Println("📭 [ASTM] EOT received — transmission complete")
+			log.Println("📭 [ASTM] Transmission complete — processing message")
 			if fullMessage.Len() > 0 {
 				ProcessMessage(fullMessage.String())
 			} else {
-				log.Println("⚠️  [ASTM] EOT with no data collected")
+				log.Println("⚠️  [ASTM] No data collected")
 			}
 			return false
 		case config.ENQ:
-			log.Println("📥 [ASTM] Re-ENQ — sending ACK")
 			port.Write([]byte{config.ACK})
 			cur = idle
-		default:
-			log.Printf("[ASTM] Ignoring unexpected idle byte: 0x%02X\n", b)
 		}
 		return true
 	}
@@ -145,7 +136,6 @@ func handleSession(port Port) {
 		if !ok {
 			return
 		}
-		log.Printf("[ASTM] state=%d  byte=0x%02X (%s)\n", cur, b, byteDesc(b))
 
 		switch cur {
 		case idle:
@@ -160,12 +150,7 @@ func handleSession(port Port) {
 					data := frameData[1:]
 					fullMessage.WriteString(data)
 					frameCount++
-					log.Printf("📦 [ASTM] Frame %d received (%d bytes)\n", frameCount, len(data))
-					if config.DebugMode {
-						log.Printf("   %q\n", data)
-					}
 				}
-				lastEndByte = b
 				tailCount = 0
 				cur = tail
 			} else {
@@ -190,7 +175,6 @@ func handleSession(port Port) {
 				}
 
 			} else if b == config.STX || b == config.EOT || b == config.ENQ || b == config.ETX || b == config.ETB {
-				log.Printf("⚠️  [ASTM] Control byte 0x%02X in tail after %d bytes — ACKing and handling\n", b, tailCount)
 				if !ackFrame() {
 					return
 				}

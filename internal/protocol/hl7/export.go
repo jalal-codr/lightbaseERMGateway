@@ -15,10 +15,8 @@ import (
 func SendToExternalSaver(payload types.HL7Message, endpoint string) error {
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal HL7 payload: %w", err)
+		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
-
-	log.Printf("[HL7 Sender] Sending to %s\nBody: %s", endpoint, string(jsonBody))
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -40,13 +38,13 @@ func SendToExternalSaver(payload types.HL7Message, endpoint string) error {
 
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return fmt.Errorf("failed to read response: %w", err)
 	}
 
-	log.Printf("[HL7 Sender] Response status: %d\nBody: %s", resp.StatusCode, string(rawBody))
+	log.Printf("\n🌐 API Response [%d]:\n%s\n", resp.StatusCode, string(rawBody))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("external saver returned non-2xx status: %d — %s", resp.StatusCode, string(rawBody))
+		return fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
 
 	return nil

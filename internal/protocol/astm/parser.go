@@ -11,12 +11,6 @@ import (
 )
 
 func ProcessMessage(message string) {
-	log.Println("\n📦 [ASTM] MESSAGE RECEIVED")
-	if config.DebugMode {
-		log.Println("Raw ASTM:\n", message)
-		log.Println(strings.Repeat("-", 60))
-	}
-
 	records := strings.Split(message, string(config.CR))
 	results := []map[string]interface{}{}
 
@@ -35,15 +29,11 @@ func ProcessMessage(message string) {
 		recordType := fields[0]
 
 		switch recordType {
-		case "H":
-			log.Println("[ASTM] Header record")
 		case "P":
 			patientID = getField(fields, 3)
 			patientName = getField(fields, 5)
-			log.Printf("[ASTM] Patient: ID=%s  Name=%s\n", patientID, patientName)
 		case "O":
 			orderID = getField(fields, 2)
-			log.Printf("[ASTM] Order: ID=%s\n", orderID)
 		case "R":
 			result := map[string]interface{}{
 				"test_code":       parseComponent(getField(fields, 2), 3),
@@ -56,15 +46,15 @@ func ProcessMessage(message string) {
 				"timestamp":       parseDateTime(getField(fields, 12)),
 			}
 			results = append(results, result)
-		case "L":
-			log.Println("[ASTM] Terminator record")
 		}
 	}
 
 	if len(results) == 0 {
-		log.Println("⚠️  [ASTM] No R (result) records found in message")
+		log.Println("⚠️  [ASTM] No result records found")
 		return
 	}
+
+	log.Printf("📦 [ASTM] Processing order: %s (Patient: %s)\n", orderID, patientID)
 
 	now := time.Now().Format(time.RFC3339)
 	payload := types.HL7Message{
@@ -95,13 +85,11 @@ func ProcessMessage(message string) {
 		})
 	}
 
-	go func() {
-		if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
-			log.Printf("❌ [ASTM] Forward failed [%s]: %v", orderID, err)
-		} else {
-			log.Printf("✅ [ASTM] Forwarded successfully [%s]", orderID)
-		}
-	}()
+	if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
+		log.Printf("❌ [ASTM] Forward failed [%s]: %v\n", orderID, err)
+	} else {
+		log.Printf("✅ [ASTM] Data forwarded successfully [%s]\n", orderID)
+	}
 }
 
 func getField(fields []string, index int) string {
