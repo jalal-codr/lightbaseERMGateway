@@ -70,7 +70,7 @@ go run ./cmd/server
 
 **Option 2: Build and run the executable**
 ```bash
-go build -o lightbaseEMRProxy.exe ./cmd/server
+go build -o server.exe ./cmd/server
 ./lightbaseEMRProxy.exe
 ```
 

@@ -5,12 +5,14 @@ import (
 	"net"
 	"strings"
 
+	"lightbaseEMRProxy/cmd/utils"
 	"lightbaseEMRProxy/internal/config"
 	"lightbaseEMRProxy/internal/protocol/astm"
 	"lightbaseEMRProxy/internal/protocol/hl7"
 )
 
 func main() {
+	utils.CheckSubscription()
 	log.Println("🚀 Starting HL7 TCP/IP Server (Listening for LIS connections)")
 	log.Println(strings.Repeat("=", 60))
 	fullAddress := config.PCIP + ":" + config.ListenPort

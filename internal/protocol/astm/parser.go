@@ -137,7 +137,7 @@ func ProcessMessage(message string) {
 
 	log.Printf("📦 [ASTM] Sending to API: Order=%s Patient=%s Results=%d\n", orderID, patientID, len(results))
 
-	if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
+	if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL+"/hl7/receives"); err != nil {
 		log.Printf("❌ [ASTM] Forward failed [%s]: %v\n", orderID, err)
 	} else {
 		log.Printf("✅ [ASTM] Data forwarded successfully [%s]\n", orderID)
@@ -260,7 +260,7 @@ func processBioRadD10Message(message string) {
 
 	log.Printf("📦 [ASTM] Sending Bio-Rad D-10 data: Sample=%s Results=%d\n", sampleID, len(results))
 
-	if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
+	if err := hl7.SendToExternalSaver(payload, config.ExternalSaverURL+"/hl7/receive"); err != nil {
 		log.Printf("❌ [ASTM] Forward failed [%s]: %v\n", sampleID, err)
 	} else {
 		log.Printf("✅ [ASTM] Bio-Rad D-10 data forwarded successfully [%s]\n", sampleID)

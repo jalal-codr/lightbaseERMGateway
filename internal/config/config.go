@@ -28,5 +28,6 @@ const (
 	ASTMComPort      = "COM1"
 	ASTMBaudRate     = 115200
 	ASTMTCPPort      = "5000"
-	ExternalSaverURL = "https://lightbase-emr-engine-dev.up.railway.app/hl7/receive"
+	ExternalSaverURL = "https://api-dev.lightbasemr.com"
+	LABSLUG          = "darlez-dev"
 )

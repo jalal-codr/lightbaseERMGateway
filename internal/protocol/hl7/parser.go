@@ -83,7 +83,7 @@ func ParseMessage(message string) []map[string]interface{} {
 	}
 
 	go func() {
-		if err := SendToExternalSaver(payload, config.ExternalSaverURL); err != nil {
+		if err := SendToExternalSaver(payload, config.ExternalSaverURL+"/hl7/receive"); err != nil {
 			log.Printf("HL7 forward failed [%s]: %v", messageControlID, err)
 		}
 	}()
