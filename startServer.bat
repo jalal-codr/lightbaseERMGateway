@@ -1,3 +1,3 @@
 @echo off
-cd /d C:\Documments\GitHub\lightbaseERMGateway
+cd /d C:\Documents\lightbaseERMGateway || (echo Failed to find directory & pause & exit /b 1)
 server.exe
