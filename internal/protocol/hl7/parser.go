@@ -55,7 +55,7 @@ func ParseMessage(message string) []map[string]interface{} {
 	// Build HL7Message (matches server's expected type exactly)
 	now := time.Now().Format(time.RFC3339)
 	payload := types.HL7Message{
-		Source:     "hl7_bridge",
+		Source:     config.LABSLUG,
 		MessageID:  messageControlID,
 		ReceivedAt: now,
 		CreatedAt:  now,
@@ -83,7 +83,7 @@ func ParseMessage(message string) []map[string]interface{} {
 	}
 
 	go func() {
-		if err := SendToExternalSaver(payload, config.ExternalSaverURL+"/hl7/receive"); err != nil {
+		if err := SendToExternalSaver(payload, config.ExternalServerURL+"/hl7/receive"); err != nil {
 			log.Printf("HL7 forward failed [%s]: %v", messageControlID, err)
 		}
 	}()

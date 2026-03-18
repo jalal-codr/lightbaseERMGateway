@@ -10,7 +10,7 @@ import (
 )
 
 func CheckSubscription() {
-	url := config.ExternalSaverURL + "/getsubscription-status?slug=" + config.LABSLUG
+	url := config.ExternalServerURL + "/getsubscription-status?slug=" + config.LABSLUG
 
 	resp, err := http.Get(url)
 	if err != nil {

@@ -21,13 +21,13 @@ const (
 
 // Server configuration
 const (
-	PCIP             = "192.168.1.193"
-	ListenPort       = "7007"
-	DebugMode        = true
-	LogToTerminal    = true
-	ASTMComPort      = "COM1"
-	ASTMBaudRate     = 115200
-	ASTMTCPPort      = "5000"
-	ExternalSaverURL = "https://api-dev.lightbasemr.com"
-	LABSLUG          = "darlez-dev"
+	PCIP              = "192.168.1.193"
+	ListenPort        = "7007"
+	DebugMode         = true
+	LogToTerminal     = true
+	ASTMComPort       = "COM1"
+	ASTMBaudRate      = 115200
+	ASTMTCPPort       = "5000"
+	ExternalServerURL = "https://api-dev.lightbasemr.com"
+	LABSLUG           = "darlez-dev"
 )
