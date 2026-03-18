@@ -10,7 +10,7 @@ import (
 )
 
 func CheckSubscription() {
-	url := config.ExternalServerURL + "/getsubscription-status?slug=" + config.LABSLUG
+	url := config.ExternalServerURL + "/subscription/get?slug=" + config.LABSLUG
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -22,6 +22,7 @@ func CheckSubscription() {
 	// Print raw response for debugging
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Println(body)
 		log.Println("Failed to read response body:", err)
 		os.Exit(1)
 	}
