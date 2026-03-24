@@ -27,7 +27,7 @@ func SendToExternalSaver(payload types.HL7Message, endpoint string) error {
 	req.Header.Set("X-Source", "hl7-bridge")
 
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 
 	resp, err := client.Do(req)
