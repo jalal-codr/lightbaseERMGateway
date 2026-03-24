@@ -1,8 +1,19 @@
 @echo off
 cd /d C:\Users\darle\Documents\lightbaseERMGateway
-git pull
 
-REM Build first
+REM Capture git pull output
+for /f "delims=" %%i in ('git pull') do set GIT_OUTPUT=%%i
+
+echo %GIT_OUTPUT%
+
+REM If already up to date, just run the existing build
+if /i "%GIT_OUTPUT%"=="Already up to date." (
+    echo No changes pulled. Starting existing build...
+    start "LightbaseERMGateway" cmd /k server.exe
+    exit /b 0
+)
+
+REM Changes were pulled — rebuild
 go build -o server.exe ./cmd/server
 
 if %errorlevel% neq 0 (
